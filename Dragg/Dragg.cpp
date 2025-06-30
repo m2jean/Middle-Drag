@@ -26,8 +26,8 @@ void LogErr(const char* title, const char* text)
 }
 
 void InjectTouch(bool isDown, bool isUp) {
-    //OutputDebugStringA(std::format("Mouse {} at ({}, {})\n",
-    //    isDown ? "Down" : (isUp ? "Up" : "Move"), g_lastPoint.x, g_lastPoint.y).c_str());
+    OutputDebugStringA(std::format("Mouse {} at ({}, {})\n",
+        isDown ? "Down" : (isUp ? "Up" : "Move"), g_lastPoint.x, g_lastPoint.y).c_str());
 
     POINTER_TOUCH_INFO touchInfo{ .pointerInfo = { .pointerType = PT_TOUCH, .ptPixelLocation = g_lastPoint } };
     if (isDown)
@@ -57,14 +57,25 @@ LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 if (g_middleButtonDown) {
                     if (!g_moved)
                     {
-                        // Start touching only when starting to move
+                        // Start touching only when the movement is larger than the tolerance
+                        constexpr LONG tolerance = 2;
+                        LONG dx = std::abs(g_lastPoint.x - mouseHook.pt.x);
+                        LONG dy = std::abs(g_lastPoint.y - mouseHook.pt.y);
+                        if (dx <= tolerance && dy <= tolerance)
+                        {
+                            break;
+                        }
+
+                        g_lastPoint = mouseHook.pt;
                         g_moved = true;
                         InjectTouch(true, false);
                         g_timer = SetTimer(nullptr, g_timer, 100, nullptr);
                     }
-
-                    g_lastPoint = mouseHook.pt;
-                    InjectTouch(false, false);
+                    else
+                    {
+                        g_lastPoint = mouseHook.pt;
+                        InjectTouch(false, false);
+                    }
                 }
                 break;
             case WM_MBUTTONUP:
@@ -112,8 +123,10 @@ int APIENTRY wWinMain([[maybe_unused]] _In_ HINSTANCE hInstance,
         DispatchMessage(&msg);
 
         if (msg.message == WM_MCLICK) {
-            mouse_event(MOUSEEVENTF_MIDDLEDOWN, g_lastPoint.x, g_lastPoint.y, 0, 0);
-            mouse_event(MOUSEEVENTF_MIDDLEUP, g_lastPoint.x, g_lastPoint.y, 0, 0);
+            INPUT input{ .type = INPUT_MOUSE, .mi = { .dx = g_lastPoint.x, .dy = g_lastPoint.y, .dwFlags = MOUSEEVENTF_MIDDLEDOWN } };
+            SendInput(1, &input, sizeof(INPUT));
+            input.mi.dwFlags = MOUSEEVENTF_MIDDLEUP;
+            SendInput(1, &input, sizeof(INPUT));
         }
         else if (msg.message == WM_TIMER && g_middleButtonDown)
         {
