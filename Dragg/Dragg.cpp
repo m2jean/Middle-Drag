@@ -6,9 +6,12 @@
 #include <windows.h>
 #include <winuser.h>
 #include <debugapi.h>
-#include <format>
+#include <Psapi.h>
 
 #include <string>
+#include <format>
+#include <unordered_set>
+#include <filesystem>
 
 HHOOK g_hHook = nullptr;
 
@@ -17,6 +20,9 @@ POINT g_lastPoint{};
 bool g_moved = false;
 
 UINT_PTR g_timer = 0;
+
+std::unordered_set<std::wstring> g_excludedProcesses = { L"blender.exe", L"Godot_v4.4.1-stable_win64.exe" };
+std::wstring g_currentProcess;
 
 constexpr DWORD WM_MCLICK = WM_USER + 1;
 
@@ -43,10 +49,34 @@ void InjectTouch(bool isDown, bool isUp) {
     }
 }
 
+void HandleMButtonUp()
+{
+    g_middleButtonDown = false;
+    KillTimer(nullptr, g_timer);
+
+    if (g_moved)
+    {
+        InjectTouch(false, true);
+    }
+    else
+    {
+        // Calling SendInput inside a hook proc is very slow
+        PostMessage(nullptr, WM_MCLICK, 0, 0);
+    }
+}
+
 LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         const MSLLHOOKSTRUCT &mouseHook = *reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);  // NOLINT(performance-no-int-to-ptr)
         if (!(mouseHook.flags & LLMHF_INJECTED)) {
+            if (g_excludedProcesses.contains(g_currentProcess)) {
+                // End touch injection first
+                if (g_middleButtonDown)
+                    HandleMButtonUp();
+
+                return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+            }
+
             switch (wParam) {
             case WM_MBUTTONDOWN:
                 g_middleButtonDown = true;
@@ -58,7 +88,7 @@ LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     if (!g_moved)
                     {
                         // Start touching only when the movement is larger than the tolerance
-                        constexpr LONG tolerance = 2;
+                        constexpr LONG tolerance = 5;
                         LONG dx = std::abs(g_lastPoint.x - mouseHook.pt.x);
                         LONG dy = std::abs(g_lastPoint.y - mouseHook.pt.y);
                         if (dx <= tolerance && dy <= tolerance)
@@ -79,18 +109,7 @@ LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 }
                 break;
             case WM_MBUTTONUP:
-                g_middleButtonDown = false;
-                KillTimer(nullptr, g_timer);
-
-                if (g_moved)
-                {
-                    InjectTouch(false, true);
-                }
-                else
-                {
-                    // Calling SendInput inside a hook proc is very slow
-                    PostMessage(nullptr, WM_MCLICK, 0, 0);
-                }
+                HandleMButtonUp();
                 return 1;
             default:
                 break;
@@ -99,6 +118,28 @@ LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
     }
 
     return CallNextHookEx(g_hHook, nCode, wParam, lParam);
+}
+
+void UpdateForegroundProcess(HWND hwnd)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (hProcess) {
+        wchar_t processName[MAX_PATH];
+        if (GetModuleFileNameEx(hProcess, nullptr, processName, MAX_PATH)) {
+            g_currentProcess = std::filesystem::path(processName).filename().wstring();
+            OutputDebugString(std::format(L"Foreground process: {}\n", g_currentProcess).c_str());
+        }
+        CloseHandle(hProcess);
+    }
+}
+
+void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG, LONG, DWORD, DWORD)
+{
+    if (event == EVENT_SYSTEM_FOREGROUND) {
+        UpdateForegroundProcess(hwnd);
+    }
 }
 
 int APIENTRY wWinMain([[maybe_unused]] _In_ HINSTANCE hInstance,
@@ -117,6 +158,17 @@ int APIENTRY wWinMain([[maybe_unused]] _In_ HINSTANCE hInstance,
         return -1;
     }
 
+    HWINEVENTHOOK hEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+
+    HWND foregroundWin = GetForegroundWindow();
+    if (foregroundWin) {
+        UpdateForegroundProcess(foregroundWin);
+    }
+    else {
+        LogErr("GetForegroundWindow Failed", std::to_string(GetLastError()).data());
+    }
+
+
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
@@ -134,6 +186,7 @@ int APIENTRY wWinMain([[maybe_unused]] _In_ HINSTANCE hInstance,
         }
     }
 
+    UnhookWinEvent(hEventHook);
     UnhookWindowsHookEx(g_hHook);
     return (int)msg.wParam;
 }
