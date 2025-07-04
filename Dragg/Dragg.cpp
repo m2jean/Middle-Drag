@@ -122,6 +122,12 @@ LRESULT CALLBACK MouseLowLevelProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
 void UpdateForegroundProcess(HWND hwnd)
 {
+    if (!hwnd) {
+        g_currentProcess.clear();
+        OutputDebugString(L"No foreground process");
+        return;
+    }
+
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
@@ -161,13 +167,7 @@ int APIENTRY wWinMain([[maybe_unused]] _In_ HINSTANCE hInstance,
     HWINEVENTHOOK hEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
 
     HWND foregroundWin = GetForegroundWindow();
-    if (foregroundWin) {
-        UpdateForegroundProcess(foregroundWin);
-    }
-    else {
-        LogErr("GetForegroundWindow Failed", std::to_string(GetLastError()).data());
-    }
-
+    UpdateForegroundProcess(foregroundWin);
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
